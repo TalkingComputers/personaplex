@@ -729,6 +729,7 @@ class LMGen(StreamingModule[_LMGenState]):
                            input_tokens: torch.Tensor=None,
                            moshi_tokens:torch.Tensor=None,
                            text_token:torch.Tensor=None,
+                           forced:torch.Tensor=None,
                            ):
         state = self._streaming_state
         if state is None:
@@ -759,6 +760,7 @@ class LMGen(StreamingModule[_LMGenState]):
                 state.cache[:, k, write_position : write_position + 1] = input_tokens[:, q_other]
                 state.provided[:, k, write_position : write_position + 1] = True
 
+        rows = slice(None) if forced is None else forced
         if moshi_tokens is not None:
             assert moshi_tokens.dim() == 3, "Shape should be [B, K, T]."
             B, Ki, S = moshi_tokens.shape
@@ -771,13 +773,13 @@ class LMGen(StreamingModule[_LMGenState]):
                 k = 1 + q_moshi
                 delay = lm_model.delays[k]
                 write_position = (state.offset + delay) % CT
-                state.cache[:, k, write_position : write_position + 1] = moshi_tokens[:, q_moshi]
-                state.provided[:, k, write_position : write_position + 1] = True
+                state.cache[rows, k, write_position : write_position + 1] = moshi_tokens[rows, q_moshi]
+                state.provided[rows, k, write_position : write_position + 1] = True
 
         if text_token is not None:
             write_position = (state.offset + lm_model.delays[0]) % CT
-            state.cache[:, 0, write_position] = text_token
-            state.provided[:, 0, write_position] = True
+            state.cache[rows, 0, write_position] = text_token if forced is None else text_token[forced]
+            state.provided[rows, 0, write_position] = True
 
         for k, delay in enumerate(lm_model.delays):
             # Only for the very beginning, we extend the initial token for the acoustic
@@ -814,12 +816,12 @@ class LMGen(StreamingModule[_LMGenState]):
 
     @torch.no_grad()
     def step(self, input_tokens: torch.Tensor=None, moshi_tokens:torch.Tensor=None, text_token:torch.Tensor=None,
-             return_embeddings: bool=False) \
+             return_embeddings: bool=False, forced:torch.Tensor=None) \
         -> torch.Tensor | tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         state = self._streaming_state
         lm_model = self.lm_model
         prepared_inputs = self.prepare_step_input(
-            input_tokens, moshi_tokens, text_token,
+            input_tokens, moshi_tokens, text_token, forced,
         )
         # print("INPUT:", None if input_tokens is None else input_tokens.squeeze().cpu().tolist()) # DEBUG
         # print("MOSHI:", None if moshi_tokens is None else moshi_tokens.squeeze().cpu().tolist()) # DEBUG
