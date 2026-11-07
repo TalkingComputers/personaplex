@@ -34,7 +34,7 @@ import torch
 
 
 def multinomial(
-    input: torch.Tensor, num_samples: int, replacement=False, *, generator=None
+    input: torch.Tensor, num_samples: int, replacement=False, *, generator=None, generators=None
 ):
     """torch.multinomial with arbitrary number of dimensions, and number of candidates on the last dimension.
 
@@ -44,11 +44,21 @@ def multinomial(
         replacement (bool): Whether to draw with replacement or not.
     Keywords args:
         generator (torch.Generator): A pseudorandom number generator for sampling.
+        generators (list[torch.Generator]): One generator per entry of the first dimension, so each batch item
+            draws from its own stream whatever else is in the batch. Excludes `generator`.
     Returns:
         torch.Tensor: Last dimension contains num_samples indices
             sampled from the multinomial probability distribution
             located in the last dimension of tensor input.
     """
+    if generators is not None:
+        assert generator is None and len(generators) == input.shape[0], (len(generators), input.shape)
+        return torch.cat(
+            [
+                multinomial(input[index : index + 1], num_samples, replacement, generator=item_generator)
+                for index, item_generator in enumerate(generators)
+            ]
+        )
     input_ = input.reshape(-1, input.shape[-1])
     # We should probably be able to remove this once the following PR has landed:
     # https://github.com/pytorch/pytorch/pull/134818/files
@@ -69,7 +79,7 @@ def multinomial(
     return output
 
 
-def sample_top_k(probs: torch.Tensor, k: int) -> torch.Tensor:
+def sample_top_k(probs: torch.Tensor, k: int, generators=None) -> torch.Tensor:
     """Sample next token from top K values along the last dimension of the input probs tensor.
 
     Args:
@@ -79,12 +89,12 @@ def sample_top_k(probs: torch.Tensor, k: int) -> torch.Tensor:
         torch.Tensor: Sampled tokens.
     """
     probs, indices = torch.topk(probs, k, dim=-1)
-    next_token = multinomial(probs, num_samples=1)
+    next_token = multinomial(probs, num_samples=1, generators=generators)
     next_token = indices.gather(-1, next_token)
     return next_token
 
 
-def sample_top_p(probs: torch.Tensor, p: float) -> torch.Tensor:
+def sample_top_p(probs: torch.Tensor, p: float, generators=None) -> torch.Tensor:
     """Sample next token from top P probabilities along the last dimension of the input probs tensor.
 
     Args:
@@ -98,7 +108,7 @@ def sample_top_p(probs: torch.Tensor, p: float) -> torch.Tensor:
     mask = probs_sum - probs_sort > p
     probs_sort *= (~mask).float()
     probs_sort.div_(probs_sort.sum(dim=-1, keepdim=True))
-    next_token = multinomial(probs_sort, num_samples=1)
+    next_token = multinomial(probs_sort, num_samples=1, generators=generators)
     next_token = torch.gather(probs_idx, -1, next_token)
     return next_token
 
@@ -109,17 +119,19 @@ def sample_token(
     temp: float = 1.0,
     top_k: int = 0,
     top_p: float = 0.0,
+    generators=None,
 ) -> torch.Tensor:
-    """Given logits of shape [*, Card], returns a LongTensor of shape [*]."""
+    """Given logits of shape [*, Card], returns a LongTensor of shape [*]. With `generators`, one per entry of
+    the first dimension, each batch item samples from its own stream."""
     # Apply softmax for sampling if temp > 0. Else, do greedy sampling to avoid zero division error.
     if use_sampling and temp > 0.0:
         probs = torch.softmax(logits / temp, dim=-1)
         if top_p > 0.0:
-            next_token = sample_top_p(probs, p=top_p)
+            next_token = sample_top_p(probs, p=top_p, generators=generators)
         elif top_k > 0:
-            next_token = sample_top_k(probs, k=top_k)
+            next_token = sample_top_k(probs, k=top_k, generators=generators)
         else:
-            next_token = multinomial(probs, num_samples=1)
+            next_token = multinomial(probs, num_samples=1, generators=generators)
     else:
         next_token = torch.argmax(logits, dim=-1, keepdim=True)
     assert next_token.shape[-1] == 1

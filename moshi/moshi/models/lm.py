@@ -671,6 +671,7 @@ class LMGen(StreamingModule[_LMGenState]):
         self.temp_text = temp_text
         self.top_k = top_k
         self.top_k_text = top_k_text
+        self.generators: Optional[list[torch.Generator]] = None
         self.text_prompt_tokens = text_prompt_tokens
         self.audio_silence_frame_cnt = audio_silence_frame_cnt
         self.voice_prompt = None
@@ -883,6 +884,7 @@ class LMGen(StreamingModule[_LMGenState]):
             self.use_sampling,
             self.temp_text,
             self.top_k_text,
+            generators=self.generators,
         )
         assert sampled_text_token.dim() == 3, sampled_text_token.shape
         assert sampled_text_token.shape[2] == 1
@@ -1153,6 +1155,7 @@ class LMGen(StreamingModule[_LMGenState]):
                     self.use_sampling,
                     self.temp,
                     self.top_k,
+                    generators=self.generators,
                 )
                 assert next_token.shape == (B, 1, 1)
                 next_token = next_token[:, 0, 0]  # shape is B
