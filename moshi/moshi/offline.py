@@ -206,7 +206,12 @@ def run_inference(
     log("info", "loading moshi")
     if moshi_weight is None:
         moshi_weight = hf_hub_download(hf_repo, loaders.MOSHI_NAME)  # type: ignore
-    lm = loaders.get_moshi_lm(moshi_weight, device=device, cpu_offload=cpu_offload)
+    lm = loaders.get_moshi_lm(
+        moshi_weight,
+        device=device,
+        cpu_offload=cpu_offload,
+        context=loaders._lm_kwargs["context"],
+    )
     lm.eval()
     log("info", "moshi loaded")
 
