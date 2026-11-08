@@ -170,6 +170,8 @@ def get_moshi_lm(
     dtype: torch.dtype = torch.bfloat16,
     delays=None,
     cpu_offload: bool = False,
+    *,
+    context: int,
 ) -> LMModel:
     """Return a pretrained Moshi LM model.
 
@@ -179,12 +181,14 @@ def get_moshi_lm(
         device: Target device for the model.
         dtype: Data type for model weights.
         delays: Optional custom delays configuration.
+        context: Temporal attention window in audio frames.
         cpu_offload: If True, offload model layers to CPU when GPU memory is
                      insufficient. Uses accelerate's device_map="auto".
     """
     # Copy to avoid mutating a shared/global dict
     lm_kwargs = dict(_lm_kwargs)
     lm_kwargs["dep_q"] = 16
+    lm_kwargs["context"] = context
     if delays is not None:
         lm_kwargs["delays"] = delays
 
