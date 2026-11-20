@@ -43,7 +43,12 @@ from tqdm.auto import tqdm
 
 from ..utils.sampling import sample_token
 from ..utils.compile import CUDAGraphed
-from ..modules.streaming import StreamingStateDict, StreamingContainer, StreamingModule, load_streaming_state
+from ..modules.streaming import (
+    StreamingStateDict,
+    StreamingContainer,
+    StreamingModule,
+    load_streaming_state,
+)
 from ..modules.transformer import (
     StreamingMultiheadAttention,
     StreamingTransformer,
@@ -57,7 +62,7 @@ logger = logging.getLogger(__name__)
 AUDIO_TOKENS_PER_STREAM = 8
 FRAME_RATE_HZ = 12.5
 SILENCE_TOKENS = np.array([948, 243, 1178, 546, 1736, 1030, 1978, 2008], dtype=np.int64)
-SINE_TOKENS    = np.array([430, 1268, 381, 1611, 1095, 1495, 56, 472], dtype=np.int64)
+SINE_TOKENS = np.array([430, 1268, 381, 1611, 1095, 1495, 56, 472], dtype=np.int64)
 
 
 @dataclass
@@ -70,7 +75,9 @@ class LMOutput:
     text_mask: torch.Tensor  # [B, 1, T]
 
 
-def _delay_sequence(delays: List[int], tensor: torch.Tensor, padding: torch.Tensor) -> torch.Tensor:
+def _delay_sequence(
+    delays: List[int], tensor: torch.Tensor, padding: torch.Tensor
+) -> torch.Tensor:
     B, K, T = tensor.shape
     assert len(delays) == K, (len(delays), K)
     outs = []
@@ -84,8 +91,11 @@ def _delay_sequence(delays: List[int], tensor: torch.Tensor, padding: torch.Tens
     return torch.stack(outs, dim=1)
 
 
-def _undelay_sequence(delays: List[int], tensor: torch.Tensor,
-                      fill_value: Union[int, float] = float('NaN')) -> Tuple[torch.Tensor, torch.Tensor]:
+def _undelay_sequence(
+    delays: List[int],
+    tensor: torch.Tensor,
+    fill_value: Union[int, float] = float("NaN"),
+) -> Tuple[torch.Tensor, torch.Tensor]:
     B, K, T, *_ = tensor.shape
     assert len(delays) == K
     mask = torch.ones(B, K, T, dtype=torch.bool, device=tensor.device)
@@ -112,6 +122,7 @@ def create_sinewave(duration: float, sample_rate: int) -> np.ndarray:
 def normalize_audio(wav: np.ndarray, sr: int, target_lufs: float) -> np.ndarray:
     """Normalize **mono** audio to a target LUFS level."""
     import pyloudnorm as pyln
+
     # Ensure shape is (T,)
     if wav.ndim == 2 and wav.shape[0] == 1:
         wav = wav[0]
@@ -122,7 +133,8 @@ def normalize_audio(wav: np.ndarray, sr: int, target_lufs: float) -> np.ndarray:
 
 
 def load_audio(
-    filepath: str, sample_rate: int, 
+    filepath: str,
+    sample_rate: int,
 ):
     """Yields audio samples in intervals of sample_interval_size"""
     sample_pcm, sample_sr = sphn.read(filepath)
@@ -130,6 +142,7 @@ def load_audio(
         sample_pcm, src_sample_rate=sample_sr, dst_sample_rate=sample_rate
     )  # shape: (C, T)
     return sample_pcm
+
 
 def _iterate_audio(sample_pcm, sample_interval_size, max_len=sys.maxsize, pad=True):
     cnt = 0
@@ -168,7 +181,7 @@ def encode_from_sphn(mimi, samples, max_batch=sys.maxsize):
         try:
             sample = next(samples)
             tensor = torch.tensor(sample, dtype=torch.float32, device=device)
-            tensor = tensor.unsqueeze(0)  # shape: (1, C, T)                                                                                                      
+            tensor = tensor.unsqueeze(0)  # shape: (1, C, T)
             current_batch.append(tensor)
         except StopIteration:
             done_flag = True
@@ -424,12 +437,12 @@ class LMModel(StreamingContainer):
         audio_token = audio_token.expand(-1, self.num_audio_codebooks, -1)
         token = torch.cat([text_token, audio_token], dim=1)
         return token
-    
+
     def embed_codes(self, sequence: torch.Tensor) -> torch.Tensor:
         B, K, S = sequence.shape
-        assert (
-            K == self.num_codebooks
-        ), f"Sequence shape {sequence.shape} must match the number of codebooks."
+        assert K == self.num_codebooks, (
+            f"Sequence shape {sequence.shape} must match the number of codebooks."
+        )
         input_sequence = sequence
         input_ = None
         for cb_index in range(self.num_audio_codebooks):
@@ -446,8 +459,10 @@ class LMModel(StreamingContainer):
         sequence: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         return self.forward_embeddings(self.embed_codes(sequence))
-    
-    def forward_embeddings(self, input: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+
+    def forward_embeddings(
+        self, input: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         # print("EMBED:", input[0, 0, :10].float().cpu().tolist()) # DEBUG
         transformer_out = self.transformer(input)
         if self.out_norm:
@@ -464,15 +479,15 @@ class LMModel(StreamingContainer):
         transformer_out: torch.Tensor,
     ) -> torch.Tensor:
         B, K, S = sequence.shape
-        assert (
-            K == 1
-        ), f"Codebooks for Depformer streaming should be passed 1 by 1, got {K}."
-        assert (
-            S == 1
-        ), f"Steps for Depformer streaming should be passed 1 by 1, got {S}."
-        assert (
-            transformer_out.shape[1] == 1
-        ), "Transformer out should be a for a single step."
+        assert K == 1, (
+            f"Codebooks for Depformer streaming should be passed 1 by 1, got {K}."
+        )
+        assert S == 1, (
+            f"Steps for Depformer streaming should be passed 1 by 1, got {S}."
+        )
+        assert transformer_out.shape[1] == 1, (
+            "Transformer out should be a for a single step."
+        )
         last_token_input: Optional[torch.Tensor] = None
         depformer_input = transformer_out
         if self.depformer_multi_linear:
@@ -502,9 +517,9 @@ class LMModel(StreamingContainer):
     ) -> torch.Tensor:
         B, K, T = sequence.shape
         Ka = self.dep_q
-        assert (
-            K == self.num_codebooks
-        ), f"Codebooks for Depformer training should be passed all at once, got {K,}."
+        assert K == self.num_codebooks, (
+            f"Codebooks for Depformer training should be passed all at once, got {(K,)}."
+        )
         depformer_inputs = []
         for cb_index in range(Ka):
             if self.depformer_multi_linear:
@@ -517,7 +532,9 @@ class LMModel(StreamingContainer):
             if cb_index == 0:
                 token_in = self.depformer_text_emb(sequence[:, 0])
             else:
-                token_in = self.depformer_emb[cb_index - 1](sequence[:, cb_index + self.audio_offset - 1])
+                token_in = self.depformer_emb[cb_index - 1](
+                    sequence[:, cb_index + self.audio_offset - 1]
+                )
             depformer_inputs.append(token_in + transformer_in)
         depformer_input = torch.stack(depformer_inputs, 2)
         # depformer_input is [B, T, K, depformer_dim], reshaping to [B * T, K, D]
@@ -541,17 +558,26 @@ class LMModel(StreamingContainer):
 
         # LLM Backbone
         transformer_out, text_logits = self.forward_codes(delayed_codes[:, :, :-1])
-        logits = self.forward_depformer_training(delayed_codes[:, :, 1:], transformer_out)
+        logits = self.forward_depformer_training(
+            delayed_codes[:, :, 1:], transformer_out
+        )
 
         # map back the logits on pattern sequence to logits on original codes: [B, K, S, card] -> [B, K, T, card]
         # and provide the corresponding mask over invalid positions of tokens. We will with NaN values invalid positions
         # to ensure they properly handled.
         logits, logits_mask = _undelay_sequence(
-            self.delays[self.audio_offset:self.audio_offset + self.dep_q],
-            logits, fill_value=float('NaN'))
-        logits_mask &= (codes[:, self.audio_offset: self.audio_offset + self.dep_q] != self.zero_token_id)
-        text_logits, text_logits_mask = _undelay_sequence(self.delays[:1], text_logits, fill_value=float('NaN'))
-        text_logits_mask &= (codes[:, :1] != self.zero_token_id)
+            self.delays[self.audio_offset : self.audio_offset + self.dep_q],
+            logits,
+            fill_value=float("NaN"),
+        )
+        logits_mask &= (
+            codes[:, self.audio_offset : self.audio_offset + self.dep_q]
+            != self.zero_token_id
+        )
+        text_logits, text_logits_mask = _undelay_sequence(
+            self.delays[:1], text_logits, fill_value=float("NaN")
+        )
+        text_logits_mask &= codes[:, :1] != self.zero_token_id
         return LMOutput(logits, logits_mask, text_logits, text_logits_mask)
 
 
@@ -593,7 +619,7 @@ def create_loss_report(
             "forced_tokens": torch.zeros((B, lm_model.dep_q + 1)),
             "model_tokens": torch.zeros((B, lm_model.dep_q + 1)),
             "ranks_of_forced": torch.zeros((B, lm_model.dep_q + 1)),
-            "losses": torch.zeros((B, lm_model.dep_q+1)),
+            "losses": torch.zeros((B, lm_model.dep_q + 1)),
         }
     )
     report["model_tokens"] = model_tokens.clone()
@@ -618,12 +644,12 @@ def create_loss_report(
         text_logits,
         target,
         ignore_index=-100,
-        )
+    )
     report["losses"][:, 0] = text_loss
 
     # Audio Channels
     for k in range(lm_model.dep_q):
-        target = target[:, k+1].squeeze(1).clone()
+        target = target[:, k + 1].squeeze(1).clone()
         channel_logits = audio_logits[:, k, :]
 
         audio_probs = torch.softmax(channel_logits, dim=-1)
@@ -663,7 +689,7 @@ class LMGen(StreamingModule[_LMGenState]):
         text_prompt_tokens: Optional[list[int]] = None,
         save_voice_prompt_embeddings: bool = False,
         sample_rate: int = 32000,
-        frame_rate: int = FRAME_RATE_HZ,
+        frame_rate: float = FRAME_RATE_HZ,
         prefill_system_prompt: bool = False,
         pin_system_prompt: bool = False,
         max_pinned_frames: int = 512,
@@ -705,7 +731,9 @@ class LMGen(StreamingModule[_LMGenState]):
         self._zero_frame = torch.zeros(1, 1, self._frame_size, device=device)
         duration = self._frame_size / self._sample_rate
         sine = create_sinewave(duration, self._sample_rate)
-        self._sine_frame = torch.tensor(sine, device=device).unsqueeze(0).unsqueeze(0)  # (1,1,T)
+        self._sine_frame = (
+            torch.tensor(sine, device=device).unsqueeze(0).unsqueeze(0)
+        )  # (1,1,T)
         self.check = check
         self.report_loss = report_loss
         if report_loss:
@@ -721,7 +749,7 @@ class LMGen(StreamingModule[_LMGenState]):
         self.voice_prompt_audio: Optional[torch.Tensor] = None
         self.voice_prompt_cache: Optional[torch.Tensor] = None
         self.voice_prompt_embeddings: Optional[torch.Tensor] = None
-        #self.voice_prompt_mimi_streaming_state: Optional[StreamingStateDict] = None
+        # self.voice_prompt_mimi_streaming_state: Optional[StreamingStateDict] = None
         self.prefill_system_prompt = prefill_system_prompt
         self.pin_system_prompt = pin_system_prompt
         self.max_pinned_frames = max_pinned_frames
@@ -749,24 +777,27 @@ class LMGen(StreamingModule[_LMGenState]):
             (batch_size, self.lm_model.num_codebooks, self.max_delay + 3),
             False,
             device=lm_model.device,
-            dtype=torch.bool
+            dtype=torch.bool,
         )
 
-        disable = lm_model.device.type != 'cuda'
+        disable = lm_model.device.type != "cuda"
         # disable = True # DEBUG
         graphed_main = CUDAGraphed(lm_model.forward_codes, disable=disable)
         graphed_embeddings = CUDAGraphed(lm_model.forward_embeddings, disable=disable)
         graphed_depth = CUDAGraphed(self.depformer_step, disable=disable)
 
-        return _LMGenState(cache, provided, initial, graphed_main, graphed_embeddings, graphed_depth)
-    
+        return _LMGenState(
+            cache, provided, initial, graphed_main, graphed_embeddings, graphed_depth
+        )
+
     @torch.no_grad()
-    def prepare_step_input(self,
-                           input_tokens: torch.Tensor=None,
-                           moshi_tokens:torch.Tensor=None,
-                           text_token:torch.Tensor=None,
-                           forced:torch.Tensor=None,
-                           ):
+    def prepare_step_input(
+        self,
+        input_tokens: torch.Tensor = None,
+        moshi_tokens: torch.Tensor = None,
+        text_token: torch.Tensor = None,
+        forced: torch.Tensor = None,
+    ):
         state = self._streaming_state
         if state is None:
             raise RuntimeError(
@@ -785,15 +816,17 @@ class LMGen(StreamingModule[_LMGenState]):
             assert input_tokens.dim() == 3, "Shape should be [B, K, T]."
             B, Ki, S = input_tokens.shape
             assert S == 1, "Only support being given steps one by one."
-            assert (
-                Ki == needed_tokens
-            ), f"We expect {needed_tokens} tokens from the user stream, got {Ki}."
+            assert Ki == needed_tokens, (
+                f"We expect {needed_tokens} tokens from the user stream, got {Ki}."
+            )
 
             for q_other in range(input_tokens.shape[1]):
                 k = AUDIO_TOKENS_PER_STREAM + 1 + q_other
                 delay = lm_model.delays[k]
                 write_position = (state.offset + delay) % CT
-                state.cache[:, k, write_position : write_position + 1] = input_tokens[:, q_other]
+                state.cache[:, k, write_position : write_position + 1] = input_tokens[
+                    :, q_other
+                ]
                 state.provided[:, k, write_position : write_position + 1] = True
 
         rows = slice(None) if forced is None else forced
@@ -801,20 +834,24 @@ class LMGen(StreamingModule[_LMGenState]):
             assert moshi_tokens.dim() == 3, "Shape should be [B, K, T]."
             B, Ki, S = moshi_tokens.shape
             assert S == 1, "Only support being given steps one by one."
-            assert (
-                Ki == needed_tokens
-            ), f"We expect {needed_tokens} tokens from the moshi stream, got {Ki}."
+            assert Ki == needed_tokens, (
+                f"We expect {needed_tokens} tokens from the moshi stream, got {Ki}."
+            )
 
             for q_moshi in range(moshi_tokens.shape[1]):
                 k = 1 + q_moshi
                 delay = lm_model.delays[k]
                 write_position = (state.offset + delay) % CT
-                state.cache[rows, k, write_position : write_position + 1] = moshi_tokens[rows, q_moshi]
+                state.cache[rows, k, write_position : write_position + 1] = (
+                    moshi_tokens[rows, q_moshi]
+                )
                 state.provided[rows, k, write_position : write_position + 1] = True
 
         if text_token is not None:
             write_position = (state.offset + lm_model.delays[0]) % CT
-            state.cache[rows, 0, write_position] = text_token if forced is None else text_token[forced]
+            state.cache[rows, 0, write_position] = (
+                text_token if forced is None else text_token[forced]
+            )
             state.provided[rows, 0, write_position] = True
 
         for k, delay in enumerate(lm_model.delays):
@@ -830,11 +867,13 @@ class LMGen(StreamingModule[_LMGenState]):
         if state.offset == 0:
             # We can't report loss or force depth tranformer tokens until we're at step 2
             # And we need to initialize the delay-0 cache where it's not provided for step 2
-            state.cache[:, :, 0] = state.initial[:, :, 0] # torch.where(state.provided[:, :, 0], state.cache[:, :, 0], state.initial[:, :, 0])
+            state.cache[:, :, 0] = state.initial[
+                :, :, 0
+            ]  # torch.where(state.provided[:, :, 0], state.cache[:, :, 0], state.initial[:, :, 0])
             state.offset += 1
             return None
 
-        model_input_position = (state.offset-1) % CT
+        model_input_position = (state.offset - 1) % CT
         target_position = state.offset % CT
         input_ = state.cache[:, :, model_input_position : model_input_position + 1]
         target_ = state.cache[:, :, target_position : target_position + 1]
@@ -851,19 +890,33 @@ class LMGen(StreamingModule[_LMGenState]):
         return input_, provided_, target_, model_input_position, target_position
 
     @torch.no_grad()
-    def step(self, input_tokens: torch.Tensor=None, moshi_tokens:torch.Tensor=None, text_token:torch.Tensor=None,
-             return_embeddings: bool=False, forced:torch.Tensor=None) \
-        -> torch.Tensor | tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    def step(
+        self,
+        input_tokens: torch.Tensor = None,
+        moshi_tokens: torch.Tensor = None,
+        text_token: torch.Tensor = None,
+        return_embeddings: bool = False,
+        forced: torch.Tensor = None,
+    ) -> (
+        torch.Tensor
+        | tuple[torch.Tensor, torch.Tensor]
+        | tuple[torch.Tensor, dict[str, torch.Tensor]]
+    ):
         state = self._streaming_state
         lm_model = self.lm_model
         prepared_inputs = self.prepare_step_input(
-            input_tokens, moshi_tokens, text_token, forced,
+            input_tokens,
+            moshi_tokens,
+            text_token,
+            forced,
         )
         # print("INPUT:", None if input_tokens is None else input_tokens.squeeze().cpu().tolist()) # DEBUG
         # print("MOSHI:", None if moshi_tokens is None else moshi_tokens.squeeze().cpu().tolist()) # DEBUG
         if prepared_inputs is None:
             return (None, None) if self.report_loss or self.return_logits else None
-        input_, provided_, target_, model_input_position, target_position = prepared_inputs
+        input_, provided_, target_, model_input_position, target_position = (
+            prepared_inputs
+        )
         if self.check:
             # Check that we are not feeding in any value that is not generated yet.
             assert not (input_ == lm_model.ungenerated_token_id).any(), (
@@ -887,7 +940,7 @@ class LMGen(StreamingModule[_LMGenState]):
         if return_embeddings:
             return output, embeddings
         return output
-    
+
     @torch.no_grad()
     def step_embeddings(self, embeddings: torch.Tensor):
         state = self._streaming_state
@@ -896,7 +949,9 @@ class LMGen(StreamingModule[_LMGenState]):
         _dummy_audio_token = lm_model._get_initial_token()
         while True:
             prepared_inputs = self.prepare_step_input(
-                input_tokens=_dummy_audio_token[:, 1:1+needed_input_tokens], moshi_tokens=_dummy_audio_token[:, 1+needed_input_tokens:], text_token=self.zero_text_code,
+                input_tokens=_dummy_audio_token[:, 1 : 1 + needed_input_tokens],
+                moshi_tokens=_dummy_audio_token[:, 1 + needed_input_tokens :],
+                text_token=self.zero_text_code,
             )
             if prepared_inputs is not None:
                 break
@@ -912,7 +967,15 @@ class LMGen(StreamingModule[_LMGenState]):
         )
 
     @torch.no_grad()
-    def process_transformer_output(self, transformer_out, text_logits, provided_, target_, model_input_position, target_position):
+    def process_transformer_output(
+        self,
+        transformer_out,
+        text_logits,
+        provided_,
+        target_,
+        model_input_position,
+        target_position,
+    ):
         state = self._streaming_state
         lm_model = self.lm_model
 
@@ -929,12 +992,24 @@ class LMGen(StreamingModule[_LMGenState]):
         assert sampled_text_token.shape[1] == 1, "Only one text stream supported."
         sampled_text_token = sampled_text_token[:, 0, 0]  # shape is [B]
 
-        next_text_token = torch.where(provided_[:, 0, 0], target_[:, 0, 0], sampled_text_token)
+        next_text_token = torch.where(
+            provided_[:, 0, 0], target_[:, 0, 0], sampled_text_token
+        )
 
         if self.return_logits:
-            sampled_audio_tokens, audio_logits = state.graphed_depth(next_text_token, transformer_out, target_[:,lm_model.audio_offset:,0], provided_[:,lm_model.audio_offset:,0]) # [B, K_audio, Card_audio]
+            sampled_audio_tokens, audio_logits = state.graphed_depth(
+                next_text_token,
+                transformer_out,
+                target_[:, lm_model.audio_offset :, 0],
+                provided_[:, lm_model.audio_offset :, 0],
+            )  # [B, K_audio, Card_audio]
         else:
-            sampled_audio_tokens = state.graphed_depth(next_text_token, transformer_out, target_[:,lm_model.audio_offset:,0], provided_[:,lm_model.audio_offset:,0])
+            sampled_audio_tokens = state.graphed_depth(
+                next_text_token,
+                transformer_out,
+                target_[:, lm_model.audio_offset :, 0],
+                provided_[:, lm_model.audio_offset :, 0],
+            )
 
         state.provided[:, :, model_input_position] = False
         ####
@@ -978,7 +1053,7 @@ class LMGen(StreamingModule[_LMGenState]):
                 return None, None
             else:
                 return None
-        
+
         B = state.cache.shape[0]
         CT = state.cache.shape[2]
         gen_delays_cuda = self.delays_cuda[: lm_model.dep_q + 1]
@@ -1000,7 +1075,8 @@ class LMGen(StreamingModule[_LMGenState]):
     def load_voice_prompt(self, voice_prompt: str):
         self.voice_prompt = voice_prompt
         raw_audio = load_audio(
-            voice_prompt, self._sample_rate,
+            voice_prompt,
+            self._sample_rate,
         )  # shape: (1, T) for mono
 
         # Normalize to -24 LUFS (mono-safe)
@@ -1047,10 +1123,11 @@ class LMGen(StreamingModule[_LMGenState]):
             max_batch=1,
         )
 
-    def _step_voice_prompt_frame(self,
-                                 voice_prompt_frame_tokens: torch.Tensor,
-                                 saved_embeddings: Optional[list[torch.Tensor]]=None,
-                                 ):
+    def _step_voice_prompt_frame(
+        self,
+        voice_prompt_frame_tokens: torch.Tensor,
+        saved_embeddings: Optional[list[torch.Tensor]] = None,
+    ):
         # Always use zero_text_code during voice prompt
         out = self.step(
             moshi_tokens=voice_prompt_frame_tokens,
@@ -1083,8 +1160,7 @@ class LMGen(StreamingModule[_LMGenState]):
             for voice_prompt_frame_tokens in self._encode_voice_prompt_frames(mimi):
                 yield
                 self._step_voice_prompt_frame(
-                    voice_prompt_frame_tokens,
-                    saved_embeddings
+                    voice_prompt_frame_tokens, saved_embeddings
                 )
             # One last checkpoint before any optional save (nice-to-have for async disconnect)
             yield
@@ -1094,19 +1170,21 @@ class LMGen(StreamingModule[_LMGenState]):
                 # and calling step_embeddings() for len(voice_prompt_embeddings) will increment offset by the same amount
                 torch.save(
                     {
-                        "embeddings": torch.stack(saved_embeddings, dim=0).detach().cpu(),
-                        "cache": self._streaming_state.cache
+                        "embeddings": torch.stack(saved_embeddings, dim=0)
+                        .detach()
+                        .cpu(),
+                        "cache": self._streaming_state.cache,
                     },
                     splitext(self.voice_prompt)[0] + ".pt",
                 )
-        print('Done loading voice prompt.')
+        print("Done loading voice prompt.")
 
     def _step_voice_prompt(self, mimi):
         # Sync path intentionally does not support `is_alive` / disconnect checks.
         for _ in self._step_voice_prompt_core(mimi):
             pass
 
-    async def _step_voice_prompt_async(self, mimi, is_alive: Optional[Callable]=None):
+    async def _step_voice_prompt_async(self, mimi, is_alive: Optional[Callable] = None):
         for _ in self._step_voice_prompt_core(mimi):
             if is_alive is not None and not await is_alive():
                 break
@@ -1121,14 +1199,14 @@ class LMGen(StreamingModule[_LMGenState]):
                 text_token=self.zero_text_code,
                 input_tokens=self._encode_sine_frame(),
             )
-        print('Done loading audio silence.')
+        print("Done loading audio silence.")
 
     def _step_audio_silence(self):
         # Sync path intentionally does not support `is_alive` / disconnect checks.
         for _ in self._step_audio_silence_core():
             pass
 
-    async def _step_audio_silence_async(self, is_alive: Optional[Callable]=None):
+    async def _step_audio_silence_async(self, is_alive: Optional[Callable] = None):
         for _ in self._step_audio_silence_core():
             if is_alive is not None and not await is_alive():
                 break
@@ -1141,20 +1219,21 @@ class LMGen(StreamingModule[_LMGenState]):
                 text_token=text_prompt_token,
                 input_tokens=self._encode_sine_frame(),
             )
-        print('Done loading text prompt.')
-
+        print("Done loading text prompt.")
 
     def _step_text_prompt(self):
         # Sync path intentionally does not support `is_alive` / disconnect checks.
         for _ in self._step_text_prompt_core():
             pass
 
-    async def _step_text_prompt_async(self, is_alive: Optional[Callable]=None):
+    async def _step_text_prompt_async(self, is_alive: Optional[Callable] = None):
         for _ in self._step_text_prompt_core():
             if is_alive is not None and not await is_alive():
                 break
 
-    async def step_system_prompts_async(self, mimi, is_alive: Optional[Callable]=None):
+    async def step_system_prompts_async(
+        self, mimi, is_alive: Optional[Callable] = None
+    ):
         if self.prefill_system_prompt:
             if is_alive is not None and not await is_alive():
                 return
@@ -1184,7 +1263,10 @@ class LMGen(StreamingModule[_LMGenState]):
     def _kv_frames(self) -> int:
         """Number of frames written to the main transformer's KV cache so far."""
         for module in self.lm_model.transformer.modules():
-            if isinstance(module, StreamingMultiheadAttention) and module._streaming_state is not None:
+            if (
+                isinstance(module, StreamingMultiheadAttention)
+                and module._streaming_state is not None
+            ):
                 return int(module._streaming_state.offset.item())
         return 0
 
@@ -1193,15 +1275,17 @@ class LMGen(StreamingModule[_LMGenState]):
         if self.pin_system_prompt:
             pin_kv_prefix(self.lm_model.transformer, frames)
             print(
-                f'Pinned {frames} system prompt frames '
-                f'(max_pinned_frames={self.max_pinned_frames}, '
-                f'sliding window {self.lm_model.context - frames} frames).'
+                f"Pinned {frames} system prompt frames "
+                f"(max_pinned_frames={self.max_pinned_frames}, "
+                f"sliding window {self.lm_model.context - frames} frames)."
             )
         else:
-            print(f'System prompt: {frames} frames (not pinned).')
+            print(f"System prompt: {frames} frames (not pinned).")
 
     @torch.no_grad()
-    def _advance_forced_frame(self, input_tokens, moshi_tokens, text_token) -> Optional[torch.Tensor]:
+    def _advance_forced_frame(
+        self, input_tokens, moshi_tokens, text_token
+    ) -> Optional[torch.Tensor]:
         """Advance the token/delay bookkeeping for one system-prompt frame exactly like `step`,
         without running the transformer or the depformer.
 
@@ -1219,7 +1303,9 @@ class LMGen(StreamingModule[_LMGenState]):
         # If a target stream were not forced, `step` would write a sampled token into the delay
         # buffer and later inputs would depend on the model: the prompt could not be prefilled.
         self._prefill_all_forced &= provided_.all()
-        input_ = input_.clone()  # this delay-buffer column is overwritten a few frames later
+        input_ = (
+            input_.clone()
+        )  # this delay-buffer column is overwritten a few frames later
         state.provided[:, :, model_input_position] = False
         state.offset += 1
         return input_
@@ -1232,8 +1318,8 @@ class LMGen(StreamingModule[_LMGenState]):
         dummy = lm_model._get_initial_token()
         while True:
             input_ = self._advance_forced_frame(
-                dummy[:, 1:1 + needed_input_tokens],
-                dummy[:, 1 + needed_input_tokens:],
+                dummy[:, 1 : 1 + needed_input_tokens],
+                dummy[:, 1 + needed_input_tokens :],
                 self.zero_text_code,
             )
             if input_ is not None:
@@ -1248,7 +1334,9 @@ class LMGen(StreamingModule[_LMGenState]):
         embeddings: list[torch.Tensor] = []
 
         def forced(moshi_tokens: torch.Tensor, text_token) -> None:
-            input_ = self._advance_forced_frame(self._encode_sine_frame(), moshi_tokens, text_token)
+            input_ = self._advance_forced_frame(
+                self._encode_sine_frame(), moshi_tokens, text_token
+            )
             if input_ is not None:
                 embeddings.append(lm_model.embed_codes(input_))
 
@@ -1265,7 +1353,9 @@ class LMGen(StreamingModule[_LMGenState]):
             if self.save_voice_prompt_embeddings:
                 torch.save(
                     {
-                        "embeddings": torch.stack(embeddings[first:], dim=0).detach().cpu(),
+                        "embeddings": torch.stack(embeddings[first:], dim=0)
+                        .detach()
+                        .cpu(),
                         "cache": state.cache,
                     },
                     splitext(self.voice_prompt)[0] + ".pt",
@@ -1292,7 +1382,9 @@ class LMGen(StreamingModule[_LMGenState]):
             )
         if state.offset != 0 or self._kv_frames() != 0:
             raise RuntimeError("System prompt prefill requires a freshly reset stream.")
-        self._prefill_all_forced = torch.ones((), dtype=torch.bool, device=self.lm_model.device)
+        self._prefill_all_forced = torch.ones(
+            (), dtype=torch.bool, device=self.lm_model.device
+        )
         embeddings = self._collect_system_prompt_embeddings(mimi)
         if not bool(self._prefill_all_forced.item()):
             raise RuntimeError(
@@ -1300,14 +1392,18 @@ class LMGen(StreamingModule[_LMGenState]):
             )
         if embeddings:
             x = torch.cat(embeddings, dim=1)  # [B, T, D]
-            chunk = self.prefill_chunk_size if self.prefill_chunk_size > 0 else x.shape[1]
+            chunk = (
+                self.prefill_chunk_size if self.prefill_chunk_size > 0 else x.shape[1]
+            )
             for start in range(0, x.shape[1], chunk):
                 # The text head and depformer are skipped: their outputs would be discarded.
-                self.lm_model.transformer(x[:, start:start + chunk])
+                self.lm_model.transformer(x[:, start : start + chunk])
         frames = self._kv_frames()
         if frames != len(embeddings):
-            raise RuntimeError(f"Prefill wrote {frames} KV frames, expected {len(embeddings)}.")
-        print(f'Prefilled {frames} system prompt frames in one pass.')
+            raise RuntimeError(
+                f"Prefill wrote {frames} KV frames, expected {len(embeddings)}."
+            )
+        print(f"Prefilled {frames} system prompt frames in one pass.")
         return frames
 
     def depformer_step(
@@ -1315,7 +1411,7 @@ class LMGen(StreamingModule[_LMGenState]):
         text_token: torch.Tensor,
         transformer_out: torch.Tensor,
         audio_tokens: torch.Tensor,
-        audio_provided: torch.Tensor
+        audio_provided: torch.Tensor,
     ) -> torch.Tensor:
         (B,) = text_token.shape
         prev_token = text_token
@@ -1356,8 +1452,9 @@ class LMGen(StreamingModule[_LMGenState]):
         assert tokens.shape == (B, lm_model.dep_q), tokens.shape
         if self.return_logits:
             all_logits = torch.stack(depformer_logits, dim=1)
-            assert all_logits.shape == (B, lm_model.dep_q, lm_model.card), all_logits.shape
+            assert all_logits.shape == (B, lm_model.dep_q, lm_model.card), (
+                all_logits.shape
+            )
             return tokens, all_logits
         else:
             return tokens
-
