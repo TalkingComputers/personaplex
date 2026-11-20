@@ -663,7 +663,7 @@ class LMGen(StreamingModule[_LMGenState]):
         text_prompt_tokens: Optional[list[int]] = None,
         save_voice_prompt_embeddings: bool = False,
         sample_rate: int = 32000,
-        frame_rate: int = FRAME_RATE_HZ,
+        frame_rate: float = FRAME_RATE_HZ,
         prefill_system_prompt: bool = False,
         pin_system_prompt: bool = False,
         max_pinned_frames: int = 512,
